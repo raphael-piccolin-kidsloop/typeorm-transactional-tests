@@ -1,9 +1,11 @@
-import { Connection } from 'typeorm';
+import { Connection, EntityManager, getManager } from 'typeorm';
+import { IsolationLevel } from 'typeorm/driver/types/IsolationLevel';
 import { QueryRunnerWrapper, wrap } from './queryRunnerWrapper';
 
 export default class TransactionalTestContext {
   private queryRunner: QueryRunnerWrapper | null = null;
   private originQueryRunnerFunction: any;
+  private originTransactionFunction: any;
 
   constructor(private readonly connection: Connection) {}
 
@@ -14,7 +16,7 @@ export default class TransactionalTestContext {
     try {
       this.queryRunner = this.buildWrappedQueryRunner();
       this.monkeyPatchQueryRunnerCreation(this.queryRunner);
-
+      this.monkeyPatchManagerTransaction(this.queryRunner);
       await this.queryRunner.connect();
       await this.queryRunner.startTransaction();
     } catch (error) {
@@ -29,7 +31,6 @@ export default class TransactionalTestContext {
     }
     try {
       await this.queryRunner.rollbackTransaction();
-      this.restoreQueryRunnerCreation();
     } finally {
       await this.cleanUpResources();
     }
@@ -45,11 +46,47 @@ export default class TransactionalTestContext {
     Connection.prototype.createQueryRunner = () => queryRunner;
   }
 
+  private monkeyPatchManagerTransaction(queryRunner: QueryRunnerWrapper): void {
+    this.originQueryRunnerFunction = EntityManager.prototype.transaction;
+    EntityManager.prototype.transaction = <T>(
+      isolationOrRunInTransaction: IsolationLevel | ((entityManager: EntityManager) => Promise<T>),
+      runInTransactionParam?: (entityManager: EntityManager) => Promise<T>,
+    ): Promise<T> =>
+      this.transactionBypass(queryRunner, isolationOrRunInTransaction, runInTransactionParam);
+  }
+
+  private transactionBypass<T>(
+    queryRunner: QueryRunnerWrapper,
+    isolationOrRunInTransaction: IsolationLevel | ((entityManager: EntityManager) => Promise<T>),
+    runInTransactionParam?: (entityManager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    const runInTransaction =
+      typeof isolationOrRunInTransaction === 'function'
+        ? isolationOrRunInTransaction
+        : runInTransactionParam;
+    if (!runInTransaction) {
+      throw new Error(
+        `Transaction method requires callback in second parameter if isolation level is supplied.`,
+      );
+    }
+    return runInTransaction(queryRunner.manager);
+  }
+
   private restoreQueryRunnerCreation(): void {
-    Connection.prototype.createQueryRunner = this.originQueryRunnerFunction;
+    if (this.originQueryRunnerFunction) {
+      Connection.prototype.createQueryRunner = this.originQueryRunnerFunction;
+    }
+  }
+
+  private restoreManagerTransaction(): void {
+    if (this.originTransactionFunction) {
+      EntityManager.prototype.transaction = this.originTransactionFunction;
+    }
   }
 
   private async cleanUpResources(): Promise<void> {
+    this.restoreQueryRunnerCreation();
+    this.restoreManagerTransaction();
     if (this.queryRunner) {
       await this.queryRunner.releaseQueryRunner();
       this.queryRunner = null;
