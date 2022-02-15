@@ -47,29 +47,26 @@ export default class TransactionalTestContext {
   }
 
   private monkeyPatchManagerTransaction(queryRunner: QueryRunnerWrapper): void {
-    this.originQueryRunnerFunction = EntityManager.prototype.transaction;
-    EntityManager.prototype.transaction = <T>(
-      isolationOrRunInTransaction: IsolationLevel | ((entityManager: EntityManager) => Promise<T>),
-      runInTransactionParam?: (entityManager: EntityManager) => Promise<T>,
-    ): Promise<T> =>
-      this.transactionBypass(queryRunner, isolationOrRunInTransaction, runInTransactionParam);
+    this.originTransactionFunction = EntityManager.prototype.transaction;
+    EntityManager.prototype.transaction = this.transactionBypass(queryRunner);
   }
 
-  private transactionBypass<T>(
-    queryRunner: QueryRunnerWrapper,
-    isolationOrRunInTransaction: IsolationLevel | ((entityManager: EntityManager) => Promise<T>),
-    runInTransactionParam?: (entityManager: EntityManager) => Promise<T>,
-  ): Promise<T> {
-    const runInTransaction =
-      typeof isolationOrRunInTransaction === 'function'
-        ? isolationOrRunInTransaction
-        : runInTransactionParam;
-    if (!runInTransaction) {
-      throw new Error(
-        `Transaction method requires callback in second parameter if isolation level is supplied.`,
-      );
-    }
-    return runInTransaction(queryRunner.manager);
+  private transactionBypass(queryRunner: QueryRunnerWrapper) {
+    return <T>(
+      isolationOrRunInTransaction: IsolationLevel | ((entityManager: EntityManager) => Promise<T>),
+      runInTransactionParam?: (entityManager: EntityManager) => Promise<T>,
+    ): Promise<T> => {
+      const runInTransaction =
+        typeof isolationOrRunInTransaction === 'function'
+          ? isolationOrRunInTransaction
+          : runInTransactionParam;
+      if (!runInTransaction) {
+        throw new Error(
+          `Transaction method requires callback in second parameter if isolation level is supplied.`,
+        );
+      }
+      return runInTransaction(queryRunner.manager);
+    };
   }
 
   private restoreQueryRunnerCreation(): void {
